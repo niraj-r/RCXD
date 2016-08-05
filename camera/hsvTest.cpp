@@ -59,7 +59,7 @@ int main(){
 	if (!cap.isOpened()) // check if we succeeded
 		return -1;
 	cap >> src;
-	cvtColor(src, src, COLOR_BGR2HSV);
+	//cvtColor(src, src, COLOR_BGR2HSV);
 	imshow(window_name,src);
 	setMouseCallback( window_name, onMouse, 0 );
 	waitKey();  

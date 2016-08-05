@@ -14,6 +14,7 @@
     // Commands with multiple response
     #define CMD_SCAN        0x20
     #define CMD_FORCE_SCAN  0x21
+    #define CMD_EXPR_SCAN	0x82
     // Commands with single response
     #define CMD_INFO        0x50
     #define CMD_HEALTH      0x52    // 0x51 ?
@@ -60,8 +61,8 @@
      */
     void rplidar_reset( rplidar_t* rplidar );
     void rplidar_stop( rplidar_t* rplidar );
-    void rplidar_info( rplidar_t* rplidar );
-    void rplidar_health( rplidar_t* rplidar );
-    void rplidar_scan( rplidar_t* rplidar );
+    int rplidar_info( rplidar_t* rplidar );
+    int rplidar_health( rplidar_t* rplidar );
+    int rplidar_scan( rplidar_t* rplidar );
 
 #endif //RPLIDAR_

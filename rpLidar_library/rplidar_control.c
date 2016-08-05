@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <sys/types.h>
 #include <sys/select.h>
+#include <sys/ioctl.h>
 #include <errno.h>
 #include <string.h>
 #include <inttypes.h>
@@ -76,6 +77,9 @@ rplidar_t* rplidar_create() {
     settings.c_cc[VTIME] = 0;	/* inter-character timer unused */
     settings.c_cc[VMIN] = 1;	/* blocking read until 1 chars received */
     
+    int controlbits = TIOCM_DTR;
+    ioctl(rplidar->serial_fd, TIOCMBIC, &controlbits);
+    
     if ( tcsetattr( rplidar->serial_fd, TCSANOW, &settings ) ) {
         printf("Error: line number %d in file %s \n", __LINE__, __FILE__);
     }
@@ -135,8 +139,10 @@ void rplidar_read_data( rplidar_t* rplidar, unsigned char* data, uint8_t size ) 
 
 
 /* check if the response matches the general and specific response descriptors. This function does not check for correct data */
-void rplidar_check_response( rplidar_t* rplidar, int length, char send_mode, char data_type ) {
-
+int rplidar_check_response( rplidar_t* rplidar, int length, char send_mode, char data_type ) {
+	
+	int goodRequest = 1;
+	
     unsigned char res_descriptor[ SIZE_HEADER ];
     rplidar_read_data( rplidar, &res_descriptor[0], SIZE_HEADER );
 
@@ -149,21 +155,26 @@ void rplidar_check_response( rplidar_t* rplidar, int length, char send_mode, cha
 
     if ( ( *res_descriptor != DES_REQUEST ) || ( *(res_descriptor+1) != DES_RESPONSE ) ) {
         printf( "response error: wrong descriptor \n" );
+        goodRequest = 0;
     }
 
     if ( ( ( *(res_descriptor+5) & 0xC0 ) >> 6  ) != send_mode ) {
         printf( "response error: wrong send_mode (%d) \n", ( *(res_descriptor+5)  ) );
+        goodRequest = 0;
     }
 
     uint32_t res_length = (unsigned int) ( *(res_descriptor+2) & 0xCFFF );
     if ( res_length != length ) {
         printf( "%X \n ", *(res_descriptor+2) );
         printf( "response error: wrong length: %d \n", res_length );
+        goodRequest = 0;
     }
 
     if ( *(res_descriptor+6) != data_type ) {
         printf( "response error: wrong data type \n" );
+        goodRequest = 0;
     }
+    return goodRequest;
 }
 
 
@@ -194,11 +205,14 @@ void rplidar_stop( rplidar_t* rplidar ) {
 }
 
 
-void rplidar_info( rplidar_t* rplidar ) {
+int rplidar_info( rplidar_t* rplidar ) {
 
     rplidar_send_request( rplidar, CMD_INFO, NULL, 0);
 
-    rplidar_check_response( rplidar, SIZE_INFO, SINGLE_RES, DATA_INFO );
+    if( !rplidar_check_response( rplidar, SIZE_INFO, SINGLE_RES, DATA_INFO ) ){
+		printf("rplidar_info: badRequest\n");
+		return 0;
+	}
 
     unsigned char buff_data[ SIZE_INFO ];
     rplidar_read_data( rplidar, buff_data, SIZE_INFO );
@@ -217,14 +231,19 @@ void rplidar_info( rplidar_t* rplidar ) {
             , buff_data[1]
             , buff_data[2]
             , (int) buff_data[3] );
+	
+	return 1;
 }
 
 
-void rplidar_health( rplidar_t* rplidar ) {
+int rplidar_health( rplidar_t* rplidar ) {
 
     rplidar_send_request( rplidar, CMD_HEALTH, NULL, 0);
 
-    rplidar_check_response( rplidar, SIZE_HEALTH, SINGLE_RES, DATA_HEALTH );
+    if( !rplidar_check_response( rplidar, SIZE_HEALTH, SINGLE_RES, DATA_HEALTH ) ){
+		printf("rplidar_health: badRequest\n");
+		return 0;
+	}
 
     unsigned char buff_data[ SIZE_HEALTH ];
     rplidar_read_data( rplidar, buff_data, SIZE_HEALTH );
@@ -232,22 +251,24 @@ void rplidar_health( rplidar_t* rplidar ) {
     unsigned char status = buff_data[0];
     if ( status == 0 ) {
         printf( "I'm OK! \n" );
-        return;
+        return 1;
     }
     if ( status == 1 ) {
         printf( "Warning: %X%X \n", buff_data[2], buff_data[1] );
-        return;
+        return 1;
     }
     if ( status == 2 ) {
         printf( "Error: %X%X \n", buff_data[2], buff_data[1] );
-        return;
+        return 1;
     }
 
     printf( "I'm in an unspecified state (%X) :( \n", status );
+    
+    return 0;
 }
 
 
-void rplidar_scan( rplidar_t* rplidar ) {
+int rplidar_scan( rplidar_t* rplidar ) {
     unsigned char buff_data[ SIZE_SCAN ];
     unsigned char quality, start_flag, start_flag_inv, check_bit;
     uint16_t angle, distance;
@@ -259,10 +280,13 @@ void rplidar_scan( rplidar_t* rplidar ) {
 
     rplidar_send_request( rplidar, CMD_SCAN, NULL, 0 );
 
-    rplidar_check_response( rplidar, SIZE_SCAN, MULTIPLE_RES, DATA_SCAN );
+    if( !rplidar_check_response( rplidar, SIZE_SCAN, MULTIPLE_RES, DATA_SCAN ) ){
+		printf("rplidar_scan: badRequest\n");
+		return 0;
+	}
 
     uint16_t i;
-    for ( i = 0; i < 8000; i++ ) {
+    for ( i = 0; i < 100; i++ ) {
         rplidar_read_data( rplidar, buff_data, SIZE_SCAN );
 
         printf( "scan data (%d):\t", i );
@@ -275,16 +299,22 @@ void rplidar_scan( rplidar_t* rplidar ) {
         distance = (uint16_t) ( buff_data[3] | ( buff_data[4] << 8 ) ) / 4;
         check_bit = buff_data[1] & 0x01 ;
 
-        if ( start_flag == start_flag_inv ) printf( "error: start flags wrong (%x, %x) \n", start_flag, start_flag_inv );
-        if ( check_bit != 1 ) printf( "error: check bit (%x) \n", check_bit );
-
+        if ( start_flag == start_flag_inv ){
+			printf( "error: start flags wrong (%x, %x) \n", start_flag, start_flag_inv );
+			return 0;
+        }
+        if ( check_bit != 1 ){
+			printf( "error: check bit (%x) \n", check_bit );
+			return 0;
+		}
+		
         //printf( "Measurement %d \n", i );
         printf( "\tQuality = %d \t", quality );
         printf( "\tAngle = %d \t", angle);
         printf( "\tDistance = %d \n", distance );
         
         if ( start_flag == 1 ) {
-            printf( "NEW 360 SCAN \n" );
+            printf( "\nNEW 360 SCAN \n" );
             clock_gettime( CLOCK_MONOTONIC, &time_raw );
             current_time = time_raw.tv_nsec / 1000000;  //(time in miliseconds)
             if ( old_time != 0 ) { 
@@ -296,12 +326,14 @@ void rplidar_scan( rplidar_t* rplidar ) {
             old_time = current_time;
         }
     }
+    return 1;
 }
 
 
     //should wait at least 1ms between two requests, 2ms after reboot. In SDK, default timeout = 2ms
 int main(){
-
+	int health_good, info_good, scan_good;
+	
     rplidar_t* rplidar = rplidar_create();
     if ( !rplidar ) {
         printf( "Error creating rplidar \n" );
@@ -309,31 +341,34 @@ int main(){
     }
     
     usleep( 1000000 );
+while(health_good != 1 || info_good != 1){
+    health_good = rplidar_health( rplidar );
 
-    rplidar_health( rplidar );
-
-    usleep( 10000 );
-
-    rplidar_stop( rplidar );
-
-    usleep( 10000 );
-
-    rplidar_info( rplidar );
-
-    usleep( 10000 );
+    usleep( 50000 );
 
     rplidar_stop( rplidar );
 
-    usleep( 10000 );
+    usleep( 50000 );
 
+    info_good = rplidar_info( rplidar );
+
+    usleep( 50000 );
+
+    rplidar_stop( rplidar );
+
+    usleep( 50000 );
+    printf("Health: %d, Info: %d\n", health_good, info_good);
+}
+
+while(1){
     rplidar_scan( rplidar );
 
-    usleep( 100000 );
+    usleep( 50000 );
 
     rplidar_stop( rplidar );
 
-    usleep( 10000 );
-
+    usleep( 50000 );
+}
     rplidar_destroy( &rplidar );
 
     return 0;
